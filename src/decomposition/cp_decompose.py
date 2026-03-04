@@ -7,6 +7,8 @@ import torch.nn as nn
 import tensorly as tl
 from tensorly.decomposition import parafac
 
+from src.decomposition.factor_cache import load_cached_factors, save_factors_to_cache
+
 
 tl.set_backend("pytorch")
 
@@ -22,12 +24,19 @@ def cp_decompose_conv(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, li
     Returns:
         (weights_vector, [f_out, f_in, f_h, f_w]) — tensorly format
     """
+    # Check cache first
+    cached = load_cached_factors(weight, rank)
+    if cached is not None:
+        return None, cached
+
     # SVD init on CUDA, random on MPS/CPU (macOS SVD segfault). ALS always on CPU.
     init = "svd" if torch.cuda.is_available() else "random"
     _, factors = parafac(weight.float().cpu(), rank=rank, init=init, n_iter_max=50, tol=1e-6)
     # Move factors back to original device/dtype
     factors = [f.to(device=weight.device, dtype=weight.dtype) for f in factors]
     # factors: [f_out (C_out,R), f_in (C_in,R), f_h (kH,R), f_w (kW,R)]
+
+    save_factors_to_cache(weight, rank, factors)
     return None, factors
 
 

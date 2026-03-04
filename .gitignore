@@ -13,6 +13,9 @@ eval_samples/
 figure_samples/
 eval_output/
 
+# CP decomposition cache
+.cp_cache/
+
 # Checkpoints & models
 *.pt
 *.pth
