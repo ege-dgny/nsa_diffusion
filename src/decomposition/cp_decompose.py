@@ -22,14 +22,19 @@ def cp_decompose_conv(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, li
     Returns:
         (weights_vector, [f_out, f_in, f_h, f_w]) — tensorly format
     """
-    # SVD init on CUDA (runs on GPU); random init on MPS/CPU (macOS SVD segfault)
+    # SVD init on CPU (cuSOLVER fails on small kernel-mode matrices), then ALS on GPU
     if torch.cuda.is_available():
-        init = "svd"
-        w = weight.float().cuda()
+        from tensorly.decomposition._cp import initialize_cp
+        cp_init = initialize_cp(weight.float().cpu(), rank, init="svd")
+        init_factors = [f.cuda() for f in cp_init[1]]
+        _, factors = parafac(
+            weight.float().cuda(), rank=rank,
+            init=(cp_init[0].cuda() if cp_init[0] is not None else None, init_factors),
+            n_iter_max=100,
+        )
     else:
-        init = "random"
-        w = weight.float().cpu()
-    _, factors = parafac(w, rank=rank, init=init, n_iter_max=100)
+        # Random init on MPS/CPU (macOS SVD segfault)
+        _, factors = parafac(weight.float().cpu(), rank=rank, init="random", n_iter_max=100)
     # Move factors back to original device/dtype
     factors = [f.to(device=weight.device, dtype=weight.dtype) for f in factors]
     # factors: [f_out (C_out,R), f_in (C_in,R), f_h (kH,R), f_w (kW,R)]
