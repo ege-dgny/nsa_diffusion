@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import multiprocessing as mp
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -88,7 +89,7 @@ def build_student(
 
     factors_map: dict[str, list[torch.Tensor]] = {}
 
-    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp.get_context("spawn")) as pool:
         futures = {
             pool.submit(_decompose_one, w, r): info.name
             for info, r, w in work
