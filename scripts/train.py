@@ -15,7 +15,12 @@ def main():
     config = ExperimentConfig.from_args()
     print(f"Method: {config.method}")
     print(f"Rank ratio: {config.rank_ratio}")
-    print(f"Steps: {config.num_steps}")
+    steps = config.effective_num_steps
+    if config.total_samples is not None:
+        print(f"Total samples: {config.total_samples}")
+        print(f"Steps: {steps} (derived from total_samples // batch_size)")
+    else:
+        print(f"Steps: {steps}")
     print(f"Batch size: {config.batch_size}")
 
     trainer = Trainer(config)

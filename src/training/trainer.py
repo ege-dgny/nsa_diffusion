@@ -44,17 +44,10 @@ class Trainer:
         self.skip_infos: list[SkipLayerInfo] = []
         self.hook_mgr: ActivationCaptureManager | None = None
 
-    def _resolve_num_steps(self) -> int:
-        """Compute actual training steps, supporting total_samples shortcut."""
-        config = self.config
-        if config.total_samples > 0:
-            return config.total_samples // config.batch_size
-        return config.num_steps
-
     def train(self) -> None:
         """Execute the full training pipeline."""
         config = self.config
-        num_steps = self._resolve_num_steps()
+        num_steps = config.effective_num_steps
 
         # Load teacher
         self.teacher = self._load_teacher()
@@ -92,10 +85,8 @@ class Trainer:
             lr=config.lr,
             weight_decay=config.weight_decay,
         )
-
-        # LR schedule: StepLR per blueprint (step=10K, gamma=0.7)
-        lr_scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=10_000, gamma=0.7,
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=config.effective_num_steps,
         )
 
         # EMA
@@ -122,7 +113,7 @@ class Trainer:
 
         # Training loop
         pbar = tqdm(
-            range(1, num_steps + 1),
+            range(1, config.effective_num_steps + 1),
             desc=f"Training [{config.method}]",
             unit="step",
             dynamic_ncols=True,
@@ -208,7 +199,7 @@ class Trainer:
                 self._save_checkpoint(out_dir, step, ema, optimizer, lr_scheduler)
 
         # Final save
-        self._save_checkpoint(out_dir, num_steps, ema, optimizer, lr_scheduler)
+        self._save_checkpoint(out_dir, config.effective_num_steps, ema, optimizer, lr_scheduler)
         self.hook_mgr.remove_hooks()
         logger.finish()
         print(f"Training complete. Checkpoints in {out_dir}")

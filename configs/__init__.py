@@ -19,8 +19,8 @@ class ExperimentConfig:
     rank_ratio: float = 0.25
 
     # Training
-    num_steps: int = 50_000
-    total_samples: int = 0   # if >0, overrides num_steps = total_samples // batch_size
+    num_steps: int = 100_000
+    total_samples: int | None = None  # If set, num_steps is ignored; steps = total_samples // batch_size
     batch_size: int = 64
     lr: float = 1e-4
     weight_decay: float = 1e-5
@@ -59,12 +59,26 @@ class ExperimentConfig:
     # Data
     num_workers: int = 4
 
+    @property
+    def effective_num_steps(self) -> int:
+        """Number of training steps. If total_samples is set, steps = total_samples // batch_size; else num_steps."""
+        if self.total_samples is not None:
+            if self.total_samples < self.batch_size:
+                raise ValueError(
+                    f"total_samples ({self.total_samples}) must be >= batch_size ({self.batch_size})"
+                )
+            return self.total_samples // self.batch_size
+        return self.num_steps
+
     @classmethod
     def from_args(cls, args: list[str] | None = None) -> ExperimentConfig:
         """Parse CLI arguments into config."""
         parser = argparse.ArgumentParser(description="NSA-Diff Training")
         for name, fld in cls.__dataclass_fields__.items():
             ftype = fld.type
+            if name == "total_samples":
+                parser.add_argument("--total_samples", type=int, default=None)
+                continue
             if ftype == "bool":
                 parser.add_argument(
                     f"--{name}",

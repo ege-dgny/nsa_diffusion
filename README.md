@@ -73,6 +73,10 @@ python scripts/train.py --method nsa_diff --num_steps 100000 --batch_size 64
 # Smoke test on MPS
 python scripts/train.py --method nsa_diff --num_steps 100 --batch_size 8
 
+# Train on a fixed number of samples (same data for any batch size)
+python scripts/train.py --method nsa_diff --total_samples 6400000 --batch_size 64
+python scripts/train.py --method nsa_diff --total_samples 6400000 --batch_size 128  # 50k steps instead of 100k
+
 # All 5 baselines
 bash scripts/run_baselines.sh
 ```
@@ -83,7 +87,8 @@ Key arguments:
 |-----|---------|-------------|
 | `--method` | `nsa_diff` | One of: lowrank_kd, standard_nsa, nsa_diff, fitnets, gramian |
 | `--rank_ratio` | `0.25` | CP rank / min(C_in, C_out). Lower = more compression |
-| `--num_steps` | `100000` | Training iterations |
+| `--num_steps` | `100000` | Training iterations (ignored if `--total_samples` is set) |
+| `--total_samples` | — | If set, steps = total_samples // batch_size so the same number of samples is seen for any batch size |
 | `--batch_size` | `64` | Batch size |
 | `--lr` | `1e-4` | Learning rate |
 | `--alpha` | `1.0` | NSA loss weight |
