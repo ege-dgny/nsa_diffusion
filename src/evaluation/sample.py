@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 from diffusers import DDPMScheduler, DDIMScheduler
+from tqdm import tqdm
 
 
 @torch.no_grad()
@@ -36,9 +38,11 @@ def generate_samples(
         scheduler.set_timesteps(num_steps)
 
     all_samples: list[torch.Tensor] = []
+    num_batches = math.ceil(num_samples / batch_size)
     remaining = num_samples
 
-    while remaining > 0:
+    batch_pbar = tqdm(range(num_batches), desc="Generating", unit="batch", dynamic_ncols=True)
+    for _ in batch_pbar:
         bs = min(batch_size, remaining)
         # Start from pure noise
         sample = torch.randn(
@@ -46,13 +50,20 @@ def generate_samples(
             generator=generator,
         ).to(device)
 
-        for t in scheduler.timesteps:
+        for t in tqdm(
+            scheduler.timesteps,
+            desc=f"  Denoising (batch {num_batches - remaining // batch_size + 1}/{num_batches})",
+            unit="step",
+            leave=False,
+            dynamic_ncols=True,
+        ):
             t_batch = t.expand(bs).to(device)
             pred = model(sample, t_batch).sample
             sample = scheduler.step(pred, t, sample).prev_sample
 
         all_samples.append(sample.cpu())
         remaining -= bs
+        batch_pbar.set_postfix(samples=f"{num_samples - remaining}/{num_samples}")
 
     return all_samples
 
@@ -67,12 +78,15 @@ def save_samples(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    total = sum(b.shape[0] for b in samples)
     idx = 0
-    for batch in samples:
-        for img in batch:
-            # Rescale from [-1,1] to [0,1]
-            img = (img + 1.0) / 2.0
-            img = img.clamp(0, 1)
-            save_image(img, output_dir / f"{idx:06d}.png")
-            idx += 1
+    with tqdm(total=total, desc="Saving images", unit="img", dynamic_ncols=True) as pbar:
+        for batch in samples:
+            for img in batch:
+                # Rescale from [-1,1] to [0,1]
+                img = (img + 1.0) / 2.0
+                img = img.clamp(0, 1)
+                save_image(img, output_dir / f"{idx:06d}.png")
+                idx += 1
+                pbar.update(1)
     return idx

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 from diffusers import DDPMScheduler
+from tqdm import tqdm
 
 from configs import ExperimentConfig
 from src.decomposition.student_builder import SkipLayerInfo, build_student
@@ -99,7 +101,13 @@ class Trainer:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # Training loop
-        for step in range(1, config.num_steps + 1):
+        pbar = tqdm(
+            range(1, config.num_steps + 1),
+            desc=f"Training [{config.method}]",
+            unit="step",
+            dynamic_ncols=True,
+        )
+        for step in pbar:
             images = next(data_iter).to(self.device)
 
             # Sample noise and timesteps
@@ -148,6 +156,14 @@ class Trainer:
             lr_scheduler.step()
             ema.update(self.student)
             self.hook_mgr.clear()
+
+            # Update progress bar postfix
+            if step % 10 == 0:
+                pbar.set_postfix(
+                    loss=f"{breakdown.total.item():.4f}",
+                    eps=f"{breakdown.l_eps:.4f}",
+                    lr=f"{optimizer.param_groups[0]['lr']:.1e}",
+                )
 
             # Logging
             if step % 100 == 0:

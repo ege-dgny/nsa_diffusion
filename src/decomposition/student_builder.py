@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 from src.decomposition.cp_decompose import compute_rank, create_cp_sequence
 from src.utils.unet_inspect import LayerInfo, discover_compressible_layers
@@ -35,7 +36,7 @@ def build_student(
 
     skip_infos: list[SkipLayerInfo] = []
 
-    for info in layers:
+    for info in tqdm(layers, desc="CP decomposing layers", unit="layer", dynamic_ncols=True):
         rank = compute_rank(info.in_channels, info.out_channels, rank_ratio)
         conv = _get_module(student, info.name)
 

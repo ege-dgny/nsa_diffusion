@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,7 @@ def benchmark_model(
 
     # Warmup
     with torch.no_grad():
-        for _ in range(num_warmup):
+        for _ in tqdm(range(num_warmup), desc="Warmup", unit="run", leave=False, dynamic_ncols=True):
             model(x, t)
 
     # Sync before timing
@@ -53,7 +54,7 @@ def benchmark_model(
     # Timed runs
     with torch.no_grad():
         start = time.perf_counter()
-        for _ in range(num_runs):
+        for _ in tqdm(range(num_runs), desc="Benchmarking", unit="run", leave=False, dynamic_ncols=True):
             model(x, t)
         if device.type == "cuda":
             torch.cuda.synchronize()
