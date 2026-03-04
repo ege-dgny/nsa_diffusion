@@ -22,8 +22,9 @@ def cp_decompose_conv(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, li
     Returns:
         (weights_vector, [f_out, f_in, f_h, f_w]) — tensorly format
     """
-    # Use random init — 'svd' init can segfault on macOS with large tensors
-    _, factors = parafac(weight.float().cpu(), rank=rank, init="random", n_iter_max=100)
+    # SVD init gives better decomposition; falls back to random on MPS/CPU (macOS segfault)
+    init = "svd" if torch.cuda.is_available() else "random"
+    _, factors = parafac(weight.float().cpu(), rank=rank, init=init, n_iter_max=100)
     # Move factors back to original device/dtype
     factors = [f.to(device=weight.device, dtype=weight.dtype) for f in factors]
     # factors: [f_out (C_out,R), f_in (C_in,R), f_h (kH,R), f_w (kW,R)]

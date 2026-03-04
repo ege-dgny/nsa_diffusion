@@ -22,6 +22,13 @@ from src.utils.logging_utils import Logger
 from src.utils.unet_inspect import LayerInfo, count_params
 
 
+def _warmup_factor(step: int, warmup_steps: int) -> float:
+    """Linear warmup from 0→1 over warmup_steps."""
+    if warmup_steps <= 0:
+        return 1.0
+    return min(1.0, step / warmup_steps)
+
+
 class Trainer:
     """Full training loop for student distillation."""
 
@@ -37,9 +44,17 @@ class Trainer:
         self.skip_infos: list[SkipLayerInfo] = []
         self.hook_mgr: ActivationCaptureManager | None = None
 
+    def _resolve_num_steps(self) -> int:
+        """Compute actual training steps, supporting total_samples shortcut."""
+        config = self.config
+        if config.total_samples > 0:
+            return config.total_samples // config.batch_size
+        return config.num_steps
+
     def train(self) -> None:
         """Execute the full training pipeline."""
         config = self.config
+        num_steps = self._resolve_num_steps()
 
         # Load teacher
         self.teacher = self._load_teacher()
@@ -56,26 +71,31 @@ class Trainer:
         print(f"Teacher params: {teacher_params:,}")
         print(f"Student params: {student_params:,}")
         print(f"Compression: {teacher_params / student_params:.2f}x")
+        print(f"Training steps: {num_steps:,} | Warmup: {config.warmup_steps}")
+        print(f"Loss weights: alpha={config.alpha} alpha_s={config.alpha_s} "
+              f"beta={config.beta} lam={config.lam}")
 
         # Hooks
         self.hook_mgr = ActivationCaptureManager()
         layer_names = [info.name for info in self.layer_infos]
         self.hook_mgr.register_hooks(self.teacher, self.student, layer_names)
 
-        # Scheduler
+        # Noise scheduler
         noise_scheduler = DDPMScheduler(
             num_train_timesteps=1000,
             beta_schedule="linear",
         )
 
-        # Optimizer & LR schedule
+        # Optimizer
         optimizer = torch.optim.AdamW(
             self.student.parameters(),
             lr=config.lr,
             weight_decay=config.weight_decay,
         )
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=config.num_steps,
+
+        # LR schedule: StepLR per blueprint (step=10K, gamma=0.7)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=10_000, gamma=0.7,
         )
 
         # EMA
@@ -102,13 +122,16 @@ class Trainer:
 
         # Training loop
         pbar = tqdm(
-            range(1, config.num_steps + 1),
+            range(1, num_steps + 1),
             desc=f"Training [{config.method}]",
             unit="step",
             dynamic_ncols=True,
         )
         for step in pbar:
             images = next(data_iter).to(self.device)
+
+            # Warmup factor: auxiliary losses ramp linearly 0→1
+            wf = _warmup_factor(step, config.warmup_steps)
 
             # Sample noise and timesteps
             noise = torch.randn_like(images)
@@ -138,6 +161,7 @@ class Trainer:
                     student_acts=self.hook_mgr.student_activations,
                     layer_infos=self.layer_infos,
                     skip_infos=self.skip_infos,
+                    warmup_factor=wf,
                 )
 
             # Backward
@@ -163,10 +187,11 @@ class Trainer:
                     loss=f"{breakdown.total.item():.4f}",
                     eps=f"{breakdown.l_eps:.4f}",
                     lr=f"{optimizer.param_groups[0]['lr']:.1e}",
+                    wf=f"{wf:.2f}",
                 )
 
-            # Logging
-            if step % 100 == 0:
+            # Logging — unweighted component magnitudes for diagnostics
+            if step % 100 == 0 or step == 1:
                 logger.log({
                     "loss/total": breakdown.total.item(),
                     "loss/eps": breakdown.l_eps,
@@ -174,7 +199,8 @@ class Trainer:
                     "loss/cond": breakdown.l_cond,
                     "loss/kd": breakdown.l_kd,
                     "loss/orth": breakdown.l_orth,
-                    "lr": optimizer.param_groups[0]["lr"],
+                    "schedule/lr": optimizer.param_groups[0]["lr"],
+                    "schedule/warmup": wf,
                 }, step=step)
 
             # Save checkpoint
@@ -182,7 +208,7 @@ class Trainer:
                 self._save_checkpoint(out_dir, step, ema, optimizer, lr_scheduler)
 
         # Final save
-        self._save_checkpoint(out_dir, config.num_steps, ema, optimizer, lr_scheduler)
+        self._save_checkpoint(out_dir, num_steps, ema, optimizer, lr_scheduler)
         self.hook_mgr.remove_hooks()
         logger.finish()
         print(f"Training complete. Checkpoints in {out_dir}")

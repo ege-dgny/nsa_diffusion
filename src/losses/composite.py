@@ -52,6 +52,7 @@ def compute_composite_loss(
     student_acts: dict[str, torch.Tensor],
     layer_infos: list[LayerInfo],
     skip_infos: list[SkipLayerInfo],
+    warmup_factor: float = 1.0,
 ) -> LossBreakdown:
     """Compute full loss based on method selection."""
     device = student_pred.device
@@ -121,24 +122,25 @@ def compute_composite_loss(
     if method in ("lowrank_kd", "standard_nsa", "nsa_diff"):
         l_orth = orthogonality_loss(student)
 
-    # Aggregate
+    # Aggregate — auxiliary losses scaled by warmup_factor (L_eps always full)
+    wf = warmup_factor
     total = l_eps
     if method == "lowrank_kd":
-        total = total + config.beta * l_kd_val + config.lam * l_orth
+        total = total + wf * config.beta * l_kd_val + wf * config.lam * l_orth
     elif method == "standard_nsa":
-        total = total + config.alpha * l_null + config.beta * l_kd_val + config.lam * l_orth
+        total = total + wf * config.alpha * l_null + wf * config.beta * l_kd_val + wf * config.lam * l_orth
     elif method == "nsa_diff":
         total = (
             total
-            + config.alpha * l_null
-            + config.alpha_s * l_cond
-            + config.beta * l_kd_val
-            + config.lam * l_orth
+            + wf * config.alpha * l_null
+            + wf * config.alpha_s * l_cond
+            + wf * config.beta * l_kd_val
+            + wf * config.lam * l_orth
         )
     elif method == "fitnets":
-        total = total + config.beta * l_fitnets_val
+        total = total + wf * config.beta * l_fitnets_val
     elif method == "gramian":
-        total = total + config.beta * l_gramian_val + config.beta * l_kd_val
+        total = total + wf * config.beta * l_gramian_val + wf * config.beta * l_kd_val
 
     return LossBreakdown(
         total=total,

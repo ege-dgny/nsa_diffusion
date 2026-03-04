@@ -19,7 +19,8 @@ class ExperimentConfig:
     rank_ratio: float = 0.25
 
     # Training
-    num_steps: int = 100_000
+    num_steps: int = 50_000
+    total_samples: int = 0   # if >0, overrides num_steps = total_samples // batch_size
     batch_size: int = 64
     lr: float = 1e-4
     weight_decay: float = 1e-5
@@ -27,11 +28,11 @@ class ExperimentConfig:
     warmup_steps: int = 1_000
     ema_decay: float = 0.9999
 
-    # Loss weights
-    alpha: float = 1.0       # standard NSA weight
-    alpha_s: float = 1.0     # conditional NSA weight
-    beta: float = 1.0        # KD / FitNets / Gramian weight
-    lam: float = 0.01        # orthogonality weight
+    # Loss weights (from blueprint Section 5.6)
+    alpha: float = 0.1       # standard NSA weight
+    alpha_s: float = 0.1     # conditional NSA weight
+    beta: float = 0.1        # KD / FitNets / Gramian weight
+    lam: float = 0.1         # orthogonality weight
 
     # Model
     teacher_id: str = "google/ddpm-cifar10-32"
