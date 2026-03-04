@@ -80,7 +80,7 @@ def build_student(
         if not isinstance(conv, nn.Conv2d):
             continue
         rank = compute_rank(info.in_channels, info.out_channels, rank_ratio)
-        work.append((info, rank, conv.weight.data.clone()))
+        work.append((info, rank, conv.weight.data.detach().cpu()))
 
     # Parallel decomposition
     if max_workers is None:
