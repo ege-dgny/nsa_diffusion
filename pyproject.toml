@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nsa-diffusion"
+version = "0.1.0"
+description = "NSA-Diff: Null-Space Absorbing Compression for Diffusion U-Nets"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1.0",
+    "torchvision>=0.16.0",
+    "diffusers>=0.25.0",
+    "accelerate>=0.25.0",
+    "tensorly>=0.8.1",
+    "pytorch-fid>=0.3.0",
+    "wandb>=0.16.0",
+    "safetensors>=0.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["src*", "configs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
