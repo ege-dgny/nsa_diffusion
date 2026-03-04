@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import copy
-import multiprocessing as mp
-import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from src.decomposition.cp_decompose import compute_rank, cp_decompose_conv
+from src.decomposition.cp_decompose import compute_rank, create_cp_sequence
 from src.utils.unet_inspect import LayerInfo, discover_compressible_layers
 
 
@@ -25,48 +22,11 @@ class SkipLayerInfo:
     skip_channels: int
 
 
-def _decompose_one(weight: torch.Tensor, rank: int) -> list[torch.Tensor]:
-    """Run CP decomposition for a single layer. Picklable for multiprocessing."""
-    _, factors = cp_decompose_conv(weight, rank)
-    return [f.cpu() for f in factors]
-
-
-def _build_cp_sequence(
-    c_out: int, c_in: int, kh: int, kw: int,
-    rank: int,
-    factors: list[torch.Tensor],
-    bias: torch.Tensor | None,
-) -> nn.Sequential:
-    """Assemble a 4-layer CP sequence from pre-computed factors."""
-    f_out, f_in, f_h, f_w = factors
-
-    pw_in = nn.Conv2d(c_in, rank, 1, bias=False)
-    pw_in.weight.data = f_in.t().unsqueeze(-1).unsqueeze(-1)
-
-    pad_w = kw // 2
-    dw_horiz = nn.Conv2d(rank, rank, (1, kw), padding=(0, pad_w), groups=rank, bias=False)
-    dw_horiz.weight.data = f_w.t().unsqueeze(1).unsqueeze(2)
-
-    pad_h = kh // 2
-    dw_vert = nn.Conv2d(rank, rank, (kh, 1), padding=(pad_h, 0), groups=rank, bias=False)
-    dw_vert.weight.data = f_h.t().unsqueeze(1).unsqueeze(-1)
-
-    pw_out = nn.Conv2d(rank, c_out, 1, bias=bias is not None)
-    pw_out.weight.data = f_out.unsqueeze(-1).unsqueeze(-1)
-    if bias is not None:
-        pw_out.bias.data = bias.clone()
-
-    return nn.Sequential(pw_in, dw_horiz, dw_vert, pw_out)
-
-
 def build_student(
     teacher: nn.Module,
     rank_ratio: float = 0.25,
-    max_workers: int | None = None,
 ) -> tuple[nn.Module, list[LayerInfo], list[SkipLayerInfo]]:
     """Create student by deep-copying teacher and replacing convs with CP sequences.
-
-    Decompositions run in parallel across CPU cores and are cached to disk.
 
     Returns:
         (student, all_layer_infos, skip_layer_infos)
@@ -74,40 +34,16 @@ def build_student(
     layers = discover_compressible_layers(teacher)
     student = copy.deepcopy(teacher)
 
-    # Collect work items
-    work: list[tuple[LayerInfo, int, torch.Tensor]] = []
-    for info in layers:
+    skip_infos: list[SkipLayerInfo] = []
+
+    for info in tqdm(layers, desc="CP decomposing layers", unit="layer", dynamic_ncols=True):
+        rank = compute_rank(info.in_channels, info.out_channels, rank_ratio)
         conv = _get_module(student, info.name)
+
         if not isinstance(conv, nn.Conv2d):
             continue
-        rank = compute_rank(info.in_channels, info.out_channels, rank_ratio)
-        work.append((info, rank, conv.weight.data.detach().cpu()))
 
-    # Parallel decomposition
-    if max_workers is None:
-        max_workers = min(os.cpu_count() or 1, len(work))
-
-    factors_map: dict[str, list[torch.Tensor]] = {}
-
-    with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp.get_context("spawn")) as pool:
-        futures = {
-            pool.submit(_decompose_one, w, r): info.name
-            for info, r, w in work
-        }
-        with tqdm(total=len(futures), desc="CP decomposing layers", unit="layer", dynamic_ncols=True) as pbar:
-            for future in as_completed(futures):
-                name = futures[future]
-                factors_map[name] = future.result()
-                pbar.update(1)
-
-    # Assemble CP sequences (fast, sequential)
-    skip_infos: list[SkipLayerInfo] = []
-    for info, rank, _ in work:
-        conv = _get_module(student, info.name)
-        factors = [f.to(device=conv.weight.device, dtype=conv.weight.dtype) for f in factors_map[info.name]]
-        c_out, c_in, kh, kw = conv.weight.shape
-        bias = conv.bias.data if conv.bias is not None else None
-        cp_seq = _build_cp_sequence(c_out, c_in, kh, kw, rank, factors, bias)
+        cp_seq = create_cp_sequence(conv, rank)
         _set_module(student, info.name, cp_seq)
 
         if info.is_skip_receiver:
