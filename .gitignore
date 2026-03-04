@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Data & outputs
+data/
+outputs/
+eval_samples/
+figure_samples/
+eval_output/
+
+# Checkpoints & models
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+
+# Wandb
+wandb/
+
+# Environment
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
