@@ -75,7 +75,7 @@ class Trainer:
             weight_decay=config.weight_decay,
         )
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=config.num_steps,
+            optimizer, T_max=config.effective_num_steps,
         )
 
         # EMA
@@ -102,7 +102,7 @@ class Trainer:
 
         # Training loop
         pbar = tqdm(
-            range(1, config.num_steps + 1),
+            range(1, config.effective_num_steps + 1),
             desc=f"Training [{config.method}]",
             unit="step",
             dynamic_ncols=True,
@@ -182,7 +182,7 @@ class Trainer:
                 self._save_checkpoint(out_dir, step, ema, optimizer, lr_scheduler)
 
         # Final save
-        self._save_checkpoint(out_dir, config.num_steps, ema, optimizer, lr_scheduler)
+        self._save_checkpoint(out_dir, config.effective_num_steps, ema, optimizer, lr_scheduler)
         self.hook_mgr.remove_hooks()
         logger.finish()
         print(f"Training complete. Checkpoints in {out_dir}")
