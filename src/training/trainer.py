@@ -67,7 +67,7 @@ class Trainer:
     def train(self) -> None:
         """Execute the full training pipeline."""
         config = self.config
-        num_steps = config.effective_num_steps
+        num_steps = config.effective_num_steps // self.world_size
 
         # Load teacher
         self.teacher = self._load_teacher()
