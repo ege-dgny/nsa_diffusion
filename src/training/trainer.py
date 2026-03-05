@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 from pathlib import Path
 
@@ -17,7 +16,10 @@ from src.hooks.activation_capture import ActivationCaptureManager
 from src.losses.composite import compute_composite_loss, LossBreakdown
 from src.training.data import create_cifar10_loader
 from src.training.ema import EMA
-from src.utils.device import get_device, get_autocast_ctx, supports_amp
+from src.utils.device import (
+    get_device, get_autocast_ctx, supports_amp,
+    is_ddp, setup_ddp, cleanup_ddp, is_main_process,
+)
 from src.utils.logging_utils import Logger
 from src.utils.unet_inspect import LayerInfo, count_params
 
@@ -34,15 +36,33 @@ class Trainer:
 
     def __init__(self, config: ExperimentConfig):
         self.config = config
-        self.device = get_device(config.device)
+
+        # DDP setup
+        self.ddp = is_ddp()
+        if self.ddp:
+            self.rank, self.local_rank, self.world_size = setup_ddp()
+            self.device = torch.device(f"cuda:{self.local_rank}")
+        else:
+            self.rank = 0
+            self.local_rank = 0
+            self.world_size = 1
+            self.device = get_device(config.device)
+
+        self.main = is_main_process(self.rank)
         self.use_amp = config.use_amp and supports_amp(self.device)
 
         # Will be set up in train()
         self.teacher: nn.Module | None = None
         self.student: nn.Module | None = None
+        self.student_unwrapped: nn.Module | None = None
         self.layer_infos: list[LayerInfo] = []
         self.skip_infos: list[SkipLayerInfo] = []
         self.hook_mgr: ActivationCaptureManager | None = None
+
+    def _log(self, msg: str) -> None:
+        """Print only on rank 0."""
+        if self.main:
+            print(msg)
 
     def train(self) -> None:
         """Execute the full training pipeline."""
@@ -52,26 +72,37 @@ class Trainer:
         # Load teacher
         self.teacher = self._load_teacher()
 
-        # Build student
+        # Build student (CP decomposition happens on CPU, then move to device)
         self.student, self.layer_infos, self.skip_infos = build_student(
             self.teacher, config.rank_ratio,
         )
         self.student = self.student.to(self.device)
         self.student.train()
 
-        teacher_params = count_params(self.teacher)
-        student_params = count_params(self.student)
-        print(f"Teacher params: {teacher_params:,}")
-        print(f"Student params: {student_params:,}")
-        print(f"Compression: {teacher_params / student_params:.2f}x")
-        print(f"Training steps: {num_steps:,} | Warmup: {config.warmup_steps}")
-        print(f"Loss weights: alpha={config.alpha} alpha_s={config.alpha_s} "
-              f"beta={config.beta} lam={config.lam}")
+        # Keep unwrapped reference for hooks/losses/EMA
+        self.student_unwrapped = self.student
 
-        # Hooks
+        # Wrap in DDP
+        if self.ddp:
+            self.student = nn.parallel.DistributedDataParallel(
+                self.student, device_ids=[self.local_rank],
+            )
+
+        teacher_params = count_params(self.teacher)
+        student_params = count_params(self.student_unwrapped)
+        self._log(f"Teacher params: {teacher_params:,}")
+        self._log(f"Student params: {student_params:,}")
+        self._log(f"Compression: {teacher_params / student_params:.2f}x")
+        self._log(f"Training steps: {num_steps:,} | Warmup: {config.warmup_steps}")
+        self._log(f"Loss weights: alpha={config.alpha} alpha_s={config.alpha_s} "
+                   f"beta={config.beta} lam={config.lam}")
+        if self.ddp:
+            self._log(f"DDP: {self.world_size} GPUs, effective batch = {config.batch_size * self.world_size}")
+
+        # Hooks on unwrapped student (DDP adds module. prefix that breaks name lookup)
         self.hook_mgr = ActivationCaptureManager()
         layer_names = [info.name for info in self.layer_infos]
-        self.hook_mgr.register_hooks(self.teacher, self.student, layer_names)
+        self.hook_mgr.register_hooks(self.teacher, self.student_unwrapped, layer_names)
 
         # Noise scheduler
         noise_scheduler = DDPMScheduler(
@@ -79,45 +110,52 @@ class Trainer:
             beta_schedule="linear",
         )
 
-        # Optimizer
+        # Optimizer (DDP-wrapped .parameters() works fine)
         optimizer = torch.optim.AdamW(
             self.student.parameters(),
             lr=config.lr,
             weight_decay=config.weight_decay,
         )
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=config.effective_num_steps,
+            optimizer, T_max=num_steps,
         )
 
-        # EMA
-        ema = EMA(self.student, decay=config.ema_decay)
+        # EMA on unwrapped student
+        ema = EMA(self.student_unwrapped, decay=config.ema_decay)
 
         # AMP scaler
         scaler = torch.amp.GradScaler("cuda") if self.use_amp else None
 
-        # Data
-        loader = create_cifar10_loader(config.batch_size, config.num_workers)
-        data_iter = _infinite_loader(loader)
-
-        # Logger
-        logger = Logger(
-            use_wandb=config.use_wandb,
-            project=config.wandb_project,
-            run_name=config.run_name or config.method,
-            config=vars(config) if not isinstance(config, dict) else config,
+        # Data (distributed sampler for DDP)
+        loader, sampler = create_cifar10_loader(
+            config.batch_size, config.num_workers,
+            rank=self.rank if self.ddp else None,
+            world_size=self.world_size if self.ddp else None,
         )
+        data_iter = _infinite_loader(loader, sampler)
+
+        # Logger (rank 0 only)
+        logger = None
+        if self.main:
+            logger = Logger(
+                use_wandb=config.use_wandb,
+                project=config.wandb_project,
+                run_name=config.run_name or config.method,
+                config=vars(config) if not isinstance(config, dict) else config,
+            )
 
         # Output dir
         out_dir = Path(config.output_dir) / (config.run_name or config.method)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        if self.main:
+            out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Training loop
-        pbar = tqdm(
-            range(1, config.effective_num_steps + 1),
-            desc=f"Training [{config.method}]",
-            unit="step",
-            dynamic_ncols=True,
-        )
+        # Training loop (tqdm only on rank 0)
+        step_range = range(1, num_steps + 1)
+        if self.main:
+            pbar = tqdm(step_range, desc=f"Training [{config.method}]", unit="step", dynamic_ncols=True)
+        else:
+            pbar = step_range
+
         for step in pbar:
             images = next(data_iter).to(self.device)
 
@@ -142,12 +180,13 @@ class Trainer:
             with get_autocast_ctx(self.device, self.use_amp):
                 student_pred = self.student(noisy_images, timesteps).sample
 
+                # Pass unwrapped student to loss (accesses raw parameters)
                 breakdown = compute_composite_loss(
                     config=config,
                     noise=noise,
                     teacher_pred=teacher_pred,
                     student_pred=student_pred,
-                    student=self.student,
+                    student=self.student_unwrapped,
                     teacher_acts=self.hook_mgr.teacher_activations,
                     student_acts=self.hook_mgr.student_activations,
                     layer_infos=self.layer_infos,
@@ -169,11 +208,11 @@ class Trainer:
                 optimizer.step()
 
             lr_scheduler.step()
-            ema.update(self.student)
+            ema.update(self.student_unwrapped)
             self.hook_mgr.clear()
 
-            # Update progress bar postfix
-            if step % 10 == 0:
+            # Progress bar (rank 0)
+            if self.main and step % 10 == 0:
                 pbar.set_postfix(
                     loss=f"{breakdown.total.item():.4f}",
                     eps=f"{breakdown.l_eps:.4f}",
@@ -181,8 +220,8 @@ class Trainer:
                     wf=f"{wf:.2f}",
                 )
 
-            # Logging — unweighted component magnitudes for diagnostics
-            if step % 100 == 0 or step == 1:
+            # Logging (rank 0)
+            if self.main and (step % 100 == 0 or step == 1):
                 logger.log({
                     "loss/total": breakdown.total.item(),
                     "loss/eps": breakdown.l_eps,
@@ -194,15 +233,18 @@ class Trainer:
                     "schedule/warmup": wf,
                 }, step=step)
 
-            # Save checkpoint
-            if step % config.save_every == 0:
+            # Save checkpoint (rank 0)
+            if self.main and step % config.save_every == 0:
                 self._save_checkpoint(out_dir, step, ema, optimizer, lr_scheduler)
 
         # Final save
-        self._save_checkpoint(out_dir, config.effective_num_steps, ema, optimizer, lr_scheduler)
+        if self.main:
+            self._save_checkpoint(out_dir, num_steps, ema, optimizer, lr_scheduler)
+            logger.finish()
         self.hook_mgr.remove_hooks()
-        logger.finish()
-        print(f"Training complete. Checkpoints in {out_dir}")
+        if self.ddp:
+            cleanup_ddp()
+        self._log(f"Training complete. Checkpoints in {out_dir}")
 
     def _load_teacher(self) -> nn.Module:
         """Load pretrained teacher UNet."""
@@ -227,17 +269,21 @@ class Trainer:
         path = out_dir / f"checkpoint_{step}.pt"
         torch.save({
             "step": step,
-            "student_state_dict": self.student.state_dict(),
+            "student_state_dict": self.student_unwrapped.state_dict(),
             "ema_state_dict": ema.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "lr_scheduler_state_dict": lr_scheduler.state_dict(),
             "config": vars(self.config) if hasattr(self.config, "__dataclass_fields__") else self.config,
         }, path)
-        print(f"Saved checkpoint: {path}")
+        self._log(f"Saved checkpoint: {path}")
 
 
-def _infinite_loader(loader):
+def _infinite_loader(loader, sampler=None):
     """Yield images forever from a DataLoader."""
+    epoch = 0
     while True:
+        if sampler is not None:
+            sampler.set_epoch(epoch)
         for batch in loader:
             yield batch[0]  # images only, discard labels
+        epoch += 1
