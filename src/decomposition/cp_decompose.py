@@ -29,9 +29,13 @@ def cp_decompose_conv(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, li
     if cached is not None:
         return None, cached
 
-    # SVD init on CUDA, random on MPS/CPU (macOS SVD segfault). ALS always on CPU.
+    # SVD init with randomized SVD (avoids OOM on kernel-mode unfoldings).
+    # Falls back to random init on MPS/CPU (macOS SVD segfault).
     init = "svd" if torch.cuda.is_available() else "random"
-    _, factors = parafac(weight.float().cpu(), rank=rank, init=init, n_iter_max=50, tol=1e-6)
+    _, factors = parafac(
+        weight.float().cpu(), rank=rank, init=init,
+        svd="randomized_svd", n_iter_max=50, tol=1e-6,
+    )
     # Move factors back to original device/dtype
     factors = [f.to(device=weight.device, dtype=weight.dtype) for f in factors]
     # factors: [f_out (C_out,R), f_in (C_in,R), f_h (kH,R), f_w (kW,R)]
