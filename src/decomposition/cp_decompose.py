@@ -13,6 +13,28 @@ from src.decomposition.factor_cache import load_cached_factors, save_factors_to_
 tl.set_backend("pytorch")
 
 
+def _svd_init(tensor: torch.Tensor, rank: int) -> list[torch.Tensor]:
+    """SVD-based CP initialization using thin SVD to avoid OOM.
+
+    For each mode, unfolds the tensor along that mode and computes
+    torch.linalg.svd(full_matrices=False). This only produces the
+    compact U/S/V — no 786432×786432 V matrix for kernel modes.
+    """
+    factors = []
+    for mode in range(tensor.ndim):
+        unfolded = tl.unfold(tensor, mode)  # (dim_mode, prod_other_dims)
+        U, S, _ = torch.linalg.svd(unfolded, full_matrices=False)
+        # Take first R columns, scale by sqrt(S) for balanced init
+        r = min(rank, U.shape[1])
+        factor = U[:, :r] * torch.sqrt(S[:r]).unsqueeze(0)
+        # Pad with small random values if rank > available singular vectors
+        if r < rank:
+            pad = torch.randn(U.shape[0], rank - r, dtype=tensor.dtype) * 0.01
+            factor = torch.cat([factor, pad], dim=1)
+        factors.append(factor)
+    return factors
+
+
 @torch.no_grad()
 def cp_decompose_conv(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, list[torch.Tensor]]:
     """Decompose a 4D conv weight via CP (PARAFAC).
@@ -29,9 +51,11 @@ def cp_decompose_conv(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, li
     if cached is not None:
         return None, cached
 
-    # Random init — tensorly's SVD init OOMs on kernel-mode unfoldings of large conv tensors.
-    # ALS converges to same solution with enough iterations.
-    _, factors = parafac(weight.float().cpu(), rank=rank, init="random", n_iter_max=50, tol=1e-6)
+    # Custom SVD init using thin SVD (full_matrices=False) — tensorly's SVD init
+    # OOMs because it computes full V on wide kernel-mode unfoldings.
+    w_cpu = weight.float().cpu()
+    init_factors = _svd_init(w_cpu, rank)
+    _, factors = parafac(w_cpu, rank=rank, init=(None, init_factors), n_iter_max=50, tol=1e-6)
     # Move factors back to original device/dtype
     factors = [f.to(device=weight.device, dtype=weight.dtype) for f in factors]
     # factors: [f_out (C_out,R), f_in (C_in,R), f_h (kH,R), f_w (kW,R)]
