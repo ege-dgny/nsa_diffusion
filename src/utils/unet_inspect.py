@@ -125,9 +125,9 @@ def get_skip_layer_names(layers: Sequence[LayerInfo]) -> list[str]:
     return [l.name for l in layers if l.is_skip_receiver]
 
 
-def count_params(model: nn.Module) -> int:
-    """Total trainable parameters."""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def count_params(model: nn.Module, trainable_only: bool = False) -> int:
+    """Total parameters. Set trainable_only=True to count only requires_grad."""
+    return sum(p.numel() for p in model.parameters() if not trainable_only or p.requires_grad)
 
 
 def print_layer_summary(layers: Sequence[LayerInfo]) -> None:

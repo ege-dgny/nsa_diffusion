@@ -31,9 +31,12 @@ def orthogonality_loss(student: nn.Module) -> torch.Tensor:
         if total.device != u.device:
             total = total.to(u.device)
 
+        # Normalize columns to unit norm before computing U^T U - I
+        u_norm = u / (u.norm(dim=0, keepdim=True) + 1e-8)
+
         # U^T U should be identity: (R, R)
-        r = u.shape[1]
-        utu = u.t() @ u  # (R, R)
+        r = u_norm.shape[1]
+        utu = u_norm.t() @ u_norm  # (R, R)
         eye = torch.eye(r, device=u.device, dtype=u.dtype)
         total = total + ((utu - eye) ** 2).sum()
         count += 1
