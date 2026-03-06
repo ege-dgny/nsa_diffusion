@@ -49,6 +49,11 @@ def _project_and_norm(
     error: torch.Tensor,
 ) -> torch.Tensor:
     """Compute ||W_eff @ e||^2 averaged over spatial positions and batch."""
+    # Cast to fp32 to prevent AMP fp16 overflow
+    w_eff = w_eff.float()
+    # Row-normalize W_eff so loss is scale-invariant (SVD init produces large entries)
+    w_eff = w_eff / (w_eff.norm(dim=1, keepdim=True) + 1e-8)
+    error = error.float()
     b, c_in, h, w = error.shape
     error_flat = error.permute(0, 2, 3, 1).reshape(-1, c_in)  # (N, C_in)
     projected = error_flat @ w_eff.t()  # (N, C_out)

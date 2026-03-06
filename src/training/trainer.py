@@ -176,23 +176,22 @@ class Trainer:
             with torch.no_grad():
                 teacher_pred = self.teacher(noisy_images, timesteps).sample
 
-            # Student forward (AMP for speed)
+            # Student forward
             with get_autocast_ctx(self.device, self.use_amp):
                 student_pred = self.student(noisy_images, timesteps).sample
 
-            # Loss in fp32 (NSA matmuls overflow in fp16)
-            breakdown = compute_composite_loss(
-                config=config,
-                noise=noise,
-                teacher_pred=teacher_pred.float(),
-                student_pred=student_pred.float(),
-                student=self.student_unwrapped,
-                teacher_acts=self.hook_mgr.teacher_activations,
-                student_acts=self.hook_mgr.student_activations,
-                layer_infos=self.layer_infos,
-                skip_infos=self.skip_infos,
-                warmup_factor=wf,
-            )
+                breakdown = compute_composite_loss(
+                    config=config,
+                    noise=noise,
+                    teacher_pred=teacher_pred,
+                    student_pred=student_pred,
+                    student=self.student_unwrapped,
+                    teacher_acts=self.hook_mgr.teacher_activations,
+                    student_acts=self.hook_mgr.student_activations,
+                    layer_infos=self.layer_infos,
+                    skip_infos=self.skip_infos,
+                    warmup_factor=wf,
+                )
 
             # Backward
             optimizer.zero_grad()

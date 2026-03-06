@@ -20,7 +20,11 @@ def null_space_loss(
     Returns:
         Scalar loss
     """
-    error = teacher_act - student_act  # (B, C_in, H, W)
+    # Cast to fp32 to prevent AMP fp16 overflow in matmul
+    w_eff = w_eff.float()
+    # Row-normalize W_eff so loss is scale-invariant (SVD init produces large entries)
+    w_eff = w_eff / (w_eff.norm(dim=1, keepdim=True) + 1e-8)
+    error = (teacher_act - student_act).float()  # (B, C_in, H, W)
     b, c_in, h, w = error.shape
 
     # Reshape to (B*H*W, C_in) for matrix multiply
