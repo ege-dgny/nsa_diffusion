@@ -176,25 +176,23 @@ class Trainer:
             with torch.no_grad():
                 teacher_pred = self.teacher(noisy_images, timesteps).sample
 
-            # Student forward (autocast for fp16 speed)
+            # Student forward + loss (both inside autocast for consistent dtypes).
+            # NSA losses use nested autocast(enabled=False) for their matmuls.
             with get_autocast_ctx(self.device, self.use_amp):
                 student_pred = self.student(noisy_images, timesteps).sample
 
-            # Loss computation OUTSIDE autocast — autocast overrides .float()
-            # casts on eligible ops (matmul), causing fp16 overflow in NSA losses.
-            # Hooks already store fp32 activations, so no extra memory cost.
-            breakdown = compute_composite_loss(
-                config=config,
-                noise=noise,
-                teacher_pred=teacher_pred,
-                student_pred=student_pred,
-                student=self.student_unwrapped,
-                teacher_acts=self.hook_mgr.teacher_activations,
-                student_acts=self.hook_mgr.student_activations,
-                layer_infos=self.layer_infos,
-                skip_infos=self.skip_infos,
-                warmup_factor=wf,
-            )
+                breakdown = compute_composite_loss(
+                    config=config,
+                    noise=noise,
+                    teacher_pred=teacher_pred,
+                    student_pred=student_pred,
+                    student=self.student_unwrapped,
+                    teacher_acts=self.hook_mgr.teacher_activations,
+                    student_acts=self.hook_mgr.student_activations,
+                    layer_infos=self.layer_infos,
+                    skip_infos=self.skip_infos,
+                    warmup_factor=wf,
+                )
 
             # Backward
             optimizer.zero_grad()

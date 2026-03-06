@@ -108,11 +108,12 @@ def get_effective_weight(cp_seq: nn.Sequential) -> torch.Tensor:
     """
     pw_in = cp_seq[0]
     pw_out = cp_seq[-1]
-    # Force fp32 — inside AMP autocast, matmul is cast to fp16 which overflows
-    # with SVD-initialized factors that have large entries
-    w_in = pw_in.weight.float().squeeze(-1).squeeze(-1)   # (R, C_in)
-    w_out = pw_out.weight.float().squeeze(-1).squeeze(-1)  # (C_out, R)
-    return w_out @ w_in  # (C_out, C_in) in fp32
+    # Nested autocast(enabled=False) overrides the outer autocast — prevents
+    # fp16 overflow in matmul with SVD-initialized factors
+    with torch.amp.autocast("cuda", enabled=False):
+        w_in = pw_in.weight.float().squeeze(-1).squeeze(-1)   # (R, C_in)
+        w_out = pw_out.weight.float().squeeze(-1).squeeze(-1)  # (C_out, R)
+        return w_out @ w_in  # (C_out, C_in) in fp32
 
 
 def compute_rank(in_channels: int, out_channels: int, rank_ratio: float) -> int:
