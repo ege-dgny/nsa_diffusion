@@ -64,23 +64,10 @@ def cp_decompose_conv(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, li
     return None, factors
 
 
-class CPSequence(nn.Sequential):
-    """CP sequence that forces fp32 forward to prevent AMP fp16 overflow.
-
-    SVD-initialized factors can have large entries; intermediate fp16
-    computations in the 4-layer chain overflow. These are small 1x1/depthwise
-    convs so fp32 has negligible performance cost.
-    """
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        with torch.amp.autocast("cuda", enabled=False):
-            return super().forward(input.float())
-
-
 def create_cp_sequence(
     conv: nn.Conv2d,
     rank: int,
-) -> CPSequence:
+) -> nn.Sequential:
     """Replace a Conv2d with a 4-layer CP sequence.
 
     Sequence: pw_in (1x1) -> dw_horiz (1xkW) -> dw_vert (kHx1) -> pw_out (1x1)
@@ -111,7 +98,7 @@ def create_cp_sequence(
     if has_bias:
         pw_out.bias.data = conv.bias.data.clone()
 
-    return CPSequence(pw_in, dw_horiz, dw_vert, pw_out)
+    return nn.Sequential(pw_in, dw_horiz, dw_vert, pw_out)
 
 
 def get_effective_weight(cp_seq: nn.Sequential) -> torch.Tensor:
