@@ -79,9 +79,11 @@ def _make_capture_hook(
     def hook(module: nn.Module, args: tuple[Any, ...]) -> None:
         inp = args[0] if isinstance(args, tuple) else args
         if detach:
-            storage[name] = inp.detach()
+            storage[name] = inp.detach().float()
         else:
-            storage[name] = inp
+            # Cast to fp32 to prevent AMP fp16 overflow (>65504 → inf → NaN)
+            # Gradients still flow through .float()
+            storage[name] = inp.float()
 
     return hook
 
